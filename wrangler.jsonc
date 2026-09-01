@@ -24,5 +24,12 @@
       "new_sqlite_classes": ["BriefingAgent"],
       "tag": "v1"
     }
+  ],
+  "workflows": [
+    {
+      "name": "research-workflow",
+      "binding": "RESEARCH_WORKFLOW",
+      "class_name": "ResearchWorkflow"
+    }
   ]
 }

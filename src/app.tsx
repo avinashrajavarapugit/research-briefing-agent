@@ -1,9 +1,10 @@
-import { Suspense, useCallback, useState, useEffect, useRef } from "react";
+import { Suspense, useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { MCPServersState } from "agents";
-import type { BriefingAgent } from "./server";
+import type { BriefingAgent, BriefingState } from "./server";
+import { ResearchPanel, type WorkflowProgress } from "./ResearchPanel";
 import {
   Badge,
   Button,
@@ -281,7 +282,12 @@ function Chat() {
   const [isAddingServer, setIsAddingServer] = useState(false);
   const mcpPanelRef = useRef<HTMLDivElement>(null);
 
-  const agent = useAgent<BriefingAgent>({
+  const [researchStatus, setResearchStatus] =
+    useState<BriefingState["status"]>("idle");
+  const [activeInstanceId, setActiveInstanceId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<WorkflowProgress | null>(null);
+
+  const agent = useAgent<BriefingAgent, BriefingState>({
     agent: "BriefingAgent",
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
@@ -289,6 +295,10 @@ function Chat() {
       (error: Event) => console.error("WebSocket error:", error),
       []
     ),
+    onStateUpdate: useCallback((state: BriefingState) => {
+      setResearchStatus(state.status);
+      setActiveInstanceId(state.activeInstanceId);
+    }, []),
     onMcpUpdate: useCallback((state: MCPServersState) => {
       setMcpState(state);
     }, []),
@@ -296,6 +306,16 @@ function Chat() {
       (message: MessageEvent) => {
         try {
           const data = JSON.parse(String(message.data));
+          if (data.type === "workflow-progress") {
+            setProgress(data.progress as WorkflowProgress);
+          }
+          if (data.type === "workflow-error") {
+            toasts.add({
+              title: "Research failed",
+              description: String(data.error),
+              timeout: 0
+            });
+          }
           if (data.type === "scheduled-task") {
             toasts.add({
               title: "Scheduled task completed",
@@ -375,6 +395,14 @@ function Chat() {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // After a workflow injects the brief, the client can reconcile the server
+  // list into a duplicate entry reusing an existing id. The first copy is the
+  // correct one; the server transcript itself is not duplicated.
+  const visibleMessages = useMemo(() => {
+    const seen = new Set<string>();
+    return messages.filter((m: UIMessage) => !seen.has(m.id) && seen.add(m.id));
+  }, [messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -686,7 +714,11 @@ function Chat() {
             <Button
               variant="secondary"
               icon={<TrashIcon size={16} />}
-              onClick={clearHistory}
+              onClick={() => {
+                clearHistory();
+                setProgress(null);
+                agent.stub.resetResearch();
+              }}
             >
               Clear
             </Button>
@@ -697,7 +729,7 @@ function Chat() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
-          {messages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <Empty
               icon={<ChatCircleDotsIcon size={32} />}
               title="Start a conversation"
@@ -729,10 +761,11 @@ function Chat() {
             />
           )}
 
-          {messages.map((message: UIMessage, index: number) => {
+          {visibleMessages.map((message: UIMessage, index: number) => {
             const isUser = message.role === "user";
             const isLastAssistant =
-              message.role === "assistant" && index === messages.length - 1;
+              message.role === "assistant" &&
+              index === visibleMessages.length - 1;
 
             return (
               <div key={message.id} className="space-y-2">
@@ -848,6 +881,17 @@ function Chat() {
 
       {/* Input */}
       <div className="border-t border-kumo-line bg-kumo-base">
+        <ResearchPanel
+          status={researchStatus}
+          instanceId={activeInstanceId}
+          progress={progress}
+          onApprove={() => {
+            if (activeInstanceId) agent.stub.approveResearch(activeInstanceId);
+          }}
+          onReject={() => {
+            if (activeInstanceId) agent.stub.rejectResearch(activeInstanceId);
+          }}
+        />
         <form
           onSubmit={(e) => {
             e.preventDefault();

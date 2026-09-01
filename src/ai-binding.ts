@@ -1,12 +1,15 @@
 /**
  * Workaround for workers-ai-provider@3.3.1 (newest release peered to ai@6).
  *
- * Its stream mapper emits a text delta for the top-level `response` field AND
- * another for `choices[0].delta.content`. Workers AI populates both with the
- * same text, so every streamed token arrives twice:
- *   "A Cloud A Cloudflare Durableflare Durable Object is a Object is a server..."
+ * Its stream mapper reads each SSE chunk twice: once from the legacy top-level
+ * fields and again from the OpenAI-compatible `choices[0].delta`. Workers AI
+ * populates both, so everything arrives doubled.
  *
- * Fixed at the source by dropping the redundant `response` field before the
+ *   text       -> "A Cloud A Cloudflare Durableflare Durable Object is a..."
+ *   tool calls -> args accumulate into one slot as '{"q":"x"}{"q":"x"}', which
+ *                 is invalid JSON, so the tool runs with {} and fails validation
+ *
+ * Fixed at the source by dropping the redundant top-level copy before the
  * provider parses it. Upstream fix landed in v4, which requires ai@7.
  */
 
@@ -19,21 +22,45 @@ function rewriteSseLine(line: string): string {
   const payload = line.slice("data:".length).trim();
   if (!payload || payload === "[DONE]") return line;
 
+  let event: Record<string, unknown>;
   try {
-    const event = JSON.parse(payload);
-    // Only drop the duplicate. Models that report text solely via `response`,
-    // with no OpenAI-style delta, must keep streaming.
-    if (event?.choices?.[0]?.delta && "response" in event) {
-      delete event.response;
-      return `data: ${JSON.stringify(event)}`;
-    }
+    event = JSON.parse(payload);
   } catch {
     return line;
   }
-  return line;
+
+  const delta = (
+    event?.choices as Array<{ delta?: Record<string, unknown> }> | undefined
+  )?.[0]?.delta;
+  if (!delta) return line;
+
+  let changed = false;
+
+  // Drop only an exact duplicate, so a model that reports text solely via
+  // `response` keeps streaming.
+  if (
+    typeof delta.content === "string" &&
+    delta.content.length > 0 &&
+    event.response === delta.content
+  ) {
+    delete event.response;
+    changed = true;
+  }
+
+  if (
+    Array.isArray(delta.tool_calls) &&
+    delta.tool_calls.length > 0 &&
+    Array.isArray(event.tool_calls) &&
+    event.tool_calls.length > 0
+  ) {
+    delete event.tool_calls;
+    changed = true;
+  }
+
+  return changed ? `data: ${JSON.stringify(event)}` : line;
 }
 
-export function stripRedundantResponseField(): TransformStream<
+export function stripDuplicateDeltas(): TransformStream<
   Uint8Array,
   Uint8Array
 > {
@@ -70,7 +97,7 @@ export function withDedupedTextDeltas(ai: Ai): Ai {
         const result = await run.apply(target, args);
 
         return result instanceof ReadableStream
-          ? result.pipeThrough(stripRedundantResponseField())
+          ? result.pipeThrough(stripDuplicateDeltas())
           : result;
       };
     }

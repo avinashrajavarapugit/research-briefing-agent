@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripRedundantResponseField } from "../src/ai-binding";
+import { stripDuplicateDeltas } from "../src/ai-binding";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -12,9 +12,7 @@ async function pipe(chunks: string[]): Promise<string> {
     }
   });
 
-  const reader = source
-    .pipeThrough(stripRedundantResponseField())
-    .getReader();
+  const reader = source.pipeThrough(stripDuplicateDeltas()).getReader();
 
   let out = "";
   for (;;) {
@@ -24,6 +22,9 @@ async function pipe(chunks: string[]): Promise<string> {
   }
   return out;
 }
+
+const firstEvent = (out: string) =>
+  JSON.parse(out.split("\n")[0].slice("data:".length));
 
 /** Shape captured verbatim from the Workers AI Llama 3.3 SSE stream. */
 function workersAiChunk(text: string) {
@@ -36,23 +37,70 @@ function workersAiChunk(text: string) {
   };
 }
 
-describe("stripRedundantResponseField", () => {
+/** Workers AI repeats a tool call in both the legacy and OpenAI-shaped fields. */
+function toolCallChunk() {
+  return {
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              id: "chatcmpl-tool-1",
+              type: "function",
+              function: {
+                name: "startResearch",
+                arguments: '{"question": "Cloudflare Workflows retries"}'
+              }
+            }
+          ]
+        },
+        index: 0
+      }
+    ],
+    tool_calls: [
+      {
+        name: "startResearch",
+        arguments: { question: "Cloudflare Workflows retries" }
+      }
+    ]
+  };
+}
+
+describe("stripDuplicateDeltas", () => {
   it("drops `response` when an OpenAI-style delta carries the same text", async () => {
     const out = await pipe([
       `data: ${JSON.stringify(workersAiChunk(" Cloudflare D"))}\n\n`
     ]);
 
-    const event = JSON.parse(out.split("\n")[0].slice("data:".length));
+    const event = firstEvent(out);
     expect(event.response).toBeUndefined();
     expect(event.choices[0].delta.content).toBe(" Cloudflare D");
+  });
+
+  it("drops the duplicate top-level tool call that corrupts argument JSON", async () => {
+    const out = await pipe([`data: ${JSON.stringify(toolCallChunk())}\n\n`]);
+
+    const event = firstEvent(out);
+    expect(event.tool_calls).toBeUndefined();
+    expect(event.choices[0].delta.tool_calls).toHaveLength(1);
+    expect(event.choices[0].delta.tool_calls[0].function.arguments).toBe(
+      '{"question": "Cloudflare Workflows retries"}'
+    );
+  });
+
+  it("keeps `response` when the delta text differs rather than guessing", async () => {
+    const chunk = {
+      choices: [{ delta: { content: "abc" }, index: 0 }],
+      response: "something else"
+    };
+    const out = await pipe([`data: ${JSON.stringify(chunk)}\n\n`]);
+    expect(firstEvent(out).response).toBe("something else");
   });
 
   it("preserves `response` when there is no delta to duplicate it", async () => {
     const legacy = { response: "hello from a non-openai model" };
     const out = await pipe([`data: ${JSON.stringify(legacy)}\n\n`]);
-
-    const event = JSON.parse(out.split("\n")[0].slice("data:".length));
-    expect(event.response).toBe("hello from a non-openai model");
+    expect(firstEvent(out).response).toBe("hello from a non-openai model");
   });
 
   it("handles an event split across reads", async () => {
@@ -64,7 +112,7 @@ describe("stripRedundantResponseField", () => {
       `${payload.slice(half)}\n\n`
     ]);
 
-    const event = JSON.parse(out.split("\n")[0].slice("data:".length));
+    const event = firstEvent(out);
     expect(event.response).toBeUndefined();
     expect(event.choices[0].delta.content).toBe("urable Object is");
   });
