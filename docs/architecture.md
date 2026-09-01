@@ -94,7 +94,7 @@ sequenceDiagram
 
 | Considered | Why not |
 |---|---|
-| **Incident triage agent** (scored one point higher on the rubric) | Its only non-LLM step is a local SQL dedupe query, which never fails on its own. Demonstrating the Workflow's retry behaviour would have required injecting an artificial fault — exactly the "checkbox compliance" reading the assignment warns about. The research agent has a genuine network step that rate-limits and times out for real. |
+| **Incident triage agent** (scored one point higher on the rubric) | Its only non-LLM step is a local SQL dedupe query, which never fails on its own. Demonstrating the Workflow's retry behaviour would have required injecting an artificial fault, which reads as checkbox compliance. The research agent has a genuine network step that rate-limits and times out for real. |
 | **Trip planner** | Every workflow step is a model call, so the Workflow degenerates into a prompt chain. Scored 3 on "genuinely multi-step". |
 | **AI SDK tool `needsApproval` for the approval gate** | It pauses the chat turn, not the background work, so it dies with the isolate. `waitForApproval` on the Workflow is durable across eviction and survives a browser refresh, which is the coordination capability a single request genuinely cannot provide. Both mechanisms exist; using the workflow-level one is the point. |
 | **Search APIs requiring a key** (Tavily, Serper, Brave, Bing) | Breaks the "reviewer runs `npm install && npm run deploy`" constraint and forces secret handling. Wikipedia and Hacker News Algolia are keyless and need no account. |

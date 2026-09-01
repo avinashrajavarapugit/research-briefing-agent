@@ -158,8 +158,3 @@ into invalid JSON, which made every tool call fail with an unhelpful error. The 
 in v4, which requires `ai@7`, but `@cloudflare/ai-chat` pins `ai@6`.
 [`src/ai-binding.ts`](src/ai-binding.ts) drops the redundant top-level copy at the SSE layer, and
 only when an exact duplicate is present, so single-source models still work.
-
-## AI assistance
-
-Built with GitHub Copilot in VS Code using Claude Opus 5. The complete verbatim prompt history,
-including the dead ends, is in [`docs/prompt-history.md`](docs/prompt-history.md).

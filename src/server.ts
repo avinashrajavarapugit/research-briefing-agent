@@ -16,7 +16,7 @@ import type { Source } from "./sources";
 
 export { ResearchWorkflow } from "./workflows/research";
 
-/** Assignment requirement: the LLM is Llama 3.3 on Workers AI. */
+/** Llama 3.3 on Workers AI — no API key, the `ai` binding is the credential. */
 const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 const SYSTEM_PROMPT = `You are a research briefing assistant.

@@ -11,7 +11,7 @@ const HACKERNEWS_API = "https://hn.algolia.com/api/v1/search";
 
 // Wikimedia's policy requires a descriptive User-Agent on API traffic.
 const USER_AGENT =
-  "research-briefing-agent/1.0 (Cloudflare Agents assignment demo)";
+  "research-briefing-agent/1.0 (+https://github.com/avinashrajavarapugit/research-briefing-agent)";
 
 const MAX_EXTRACT_CHARS = 1200;
 

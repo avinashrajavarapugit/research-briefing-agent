@@ -142,3 +142,8 @@ dist
 .wrangler
 .dev.vars
 
+# Local AI-agent authoring scaffolding — kept on disk, not published
+.claude/
+AGENTS.md
+CLAUDE.md
+
