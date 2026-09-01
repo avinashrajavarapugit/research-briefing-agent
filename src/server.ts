@@ -46,7 +46,17 @@ export class BriefingAgent extends AIChatAgent<Env> {
     await this.removeMcpServer(serverId);
   }
 
-  async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+  // Phase 1: hardcoded reply. Proves the browser -> WebSocket -> agent -> render path
+  // works before any model is involved. Replaced with Llama 3.3 in Phase 2.
+  async onChatMessage(_onFinish: unknown, _options?: OnChatMessageOptions) {
+    const latest = this.messages.at(-1);
+    const text = latest?.parts.find((p) => p.type === "text")?.text ?? "";
+    return new Response(`echo: ${text}`, {
+      headers: { "Content-Type": "text/plain" }
+    });
+  }
+
+  private async unusedTemplateChat(options?: OnChatMessageOptions) {
     const mcpTools = this.mcp.getAITools();
     const workersai = createWorkersAI({ binding: this.env.AI });
 
