@@ -27,7 +27,10 @@ export class ResearchWorkflow extends AgentWorkflow<
   BriefingAgent,
   ResearchParams
 > {
-  async run(event: AgentWorkflowEvent<ResearchParams>, step: AgentWorkflowStep) {
+  async run(
+    event: AgentWorkflowEvent<ResearchParams>,
+    step: AgentWorkflowStep
+  ) {
     const { briefId, question } = event.payload;
 
     await step.mergeAgentState({
@@ -49,8 +52,10 @@ export class ResearchWorkflow extends AgentWorkflow<
     });
 
     // Steps 2 and 3 — network. Fail on rate limits, timeouts and 5xx.
-    const wikipedia = await step.do("search-wikipedia", NETWORK_STEP, async () =>
-      gather(queries, searchWikipedia)
+    const wikipedia = await step.do(
+      "search-wikipedia",
+      NETWORK_STEP,
+      async () => gather(queries, searchWikipedia)
     );
 
     await this.reportProgress({
@@ -184,7 +189,11 @@ export function selectSources(
   const hn = relevant(hackernews);
 
   const picked: Source[] = [];
-  for (let i = 0; picked.length < max && (i < wiki.length || i < hn.length); i++) {
+  for (
+    let i = 0;
+    picked.length < max && (i < wiki.length || i < hn.length);
+    i++
+  ) {
     if (wiki[i]) picked.push(wiki[i]);
     if (hn[i] && picked.length < max) picked.push(hn[i]);
   }

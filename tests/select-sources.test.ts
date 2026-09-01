@@ -61,8 +61,8 @@ describe("selectSources", () => {
   });
 
   it("returns nothing when every result is irrelevant", () => {
-    expect(
-      selectSources(QUESTION, [source("wikipedia", "Email")], [])
-    ).toEqual([]);
+    expect(selectSources(QUESTION, [source("wikipedia", "Email")], [])).toEqual(
+      []
+    );
   });
 });

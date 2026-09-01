@@ -360,7 +360,9 @@ Two to four sentences.
             "Start the multi-step research workflow for a question that needs " +
             "external sources. Returns immediately; results arrive separately.",
           inputSchema: z.object({
-            question: z.string().describe("The research question to investigate")
+            question: z
+              .string()
+              .describe("The research question to investigate")
           }),
           execute: async ({ question }) => {
             // Llama 3.3 re-calls this tool instead of replying, which would

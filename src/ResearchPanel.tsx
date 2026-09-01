@@ -53,21 +53,14 @@ export function ResearchPanel({
         <span className="text-kumo-subtle text-sm">{percent}%</span>
       </div>
 
-      <div
-        className="h-2 w-full rounded-full bg-kumo-control overflow-hidden"
-        role="progressbar"
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
+      <progress
+        className={`h-2 w-full rounded-full ${
+          status === "error" ? "accent-red-500" : "accent-kumo-brand"
+        }`}
         aria-label="Research progress"
-      >
-        <div
-          className={`h-full transition-all duration-500 ${
-            status === "error" ? "bg-red-500" : "bg-kumo-brand"
-          }`}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
+        value={percent}
+        max={100}
+      />
 
       {status !== "complete" && progress?.message && (
         <p className="mt-2 text-sm text-kumo-subtle">{progress.message}</p>

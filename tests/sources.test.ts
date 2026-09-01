@@ -62,9 +62,9 @@ describe("searchWikipedia", () => {
     await searchWikipedia("policy");
 
     const init = spy.mock.calls[0][1] as RequestInit;
-    expect(
-      (init.headers as Record<string, string>)["User-Agent"]
-    ).toContain("research-briefing-agent");
+    expect((init.headers as Record<string, string>)["User-Agent"]).toContain(
+      "research-briefing-agent"
+    );
   });
 
   it("encodes the query rather than interpolating it into the URL", async () => {

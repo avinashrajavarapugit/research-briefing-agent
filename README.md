@@ -1,229 +1,124 @@
-# Agent Starter
+# Research Briefing Agent
 
-![npm i agents command](./npm-agents-banner.svg)
+An AI agent on Cloudflare that turns a research question into a short, cited brief. It plans
+sub-queries with Llama 3.3, runs a durable Cloudflare Workflow that fetches real sources from
+Wikipedia and Hacker News, pauses for you to approve those sources, then summarizes each one and
+synthesizes the brief. Every brief is stored in the agent's own SQLite database, so the
+conversation and its results survive a page refresh.
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+**Live URL:** https://research-briefing-agent.rajavarapu-avinash.workers.dev
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+No API keys are required. Workers AI is reached through the `ai` binding, and both research
+sources are keyless public APIs, so setup is `npm install && npm run deploy`.
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, task scheduling, and vision (image input).
+## Architecture
 
-## Quick start
+Each requirement maps to exactly one Cloudflare primitive.
+
+| Requirement | Cloudflare primitive | File |
+|---|---|---|
+| LLM | Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast` via `workers-ai-provider` | [`src/server.ts`](src/server.ts), [`src/workflows/research.ts`](src/workflows/research.ts) |
+| Workflow / coordination | Cloudflare Workflow started by the Agent — `ResearchWorkflow extends AgentWorkflow`, bound as `RESEARCH_WORKFLOW` | [`src/workflows/research.ts`](src/workflows/research.ts), [`wrangler.jsonc`](wrangler.jsonc) |
+| User input | React chat over WebSocket (`useAgent` + `useAgentChat`), plus optional browser voice input | [`src/app.tsx`](src/app.tsx), [`src/VoiceButton.tsx`](src/VoiceButton.tsx) |
+| Memory / state | `AIChatAgent` message persistence in per-instance SQLite, a `briefs` table via `this.sql`, and light broadcast state via `setState` | [`src/server.ts`](src/server.ts) |
+
+Supporting files:
+
+| File | Role |
+|---|---|
+| [`src/sources.ts`](src/sources.ts) | Keyless Wikipedia and Hacker News fetchers. Hosts are hardcoded constants — the SSRF boundary |
+| [`src/ai-binding.ts`](src/ai-binding.ts) | Works around a `workers-ai-provider` bug that doubles every streamed token and corrupts tool-call arguments |
+| [`src/ResearchPanel.tsx`](src/ResearchPanel.tsx) | Live workflow progress and the approve / reject controls |
+| [`tests/`](tests) | Vitest via `@cloudflare/vitest-pool-workers`, running inside `workerd` |
+
+### One user turn
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as React UI
+    participant Agent as BriefingAgent
+    participant AI as Workers AI<br/>Llama 3.3
+    participant WF as ResearchWorkflow
+    participant Web as Wikipedia / HN
+    participant DB as Agent SQLite
+
+    User->>UI: "Research how Raft elects a leader."
+    UI->>Agent: sendMessage over WebSocket
+    Agent->>DB: persist user message
+    Agent->>AI: streamText(messages, tools)
+    AI-->>Agent: tool call startResearch(question)
+    Agent->>WF: runWorkflow("RESEARCH_WORKFLOW", ...)
+
+    WF->>AI: step.do("plan-queries")
+    WF->>Web: step.do("search-wikipedia") retries 3, exponential
+    WF->>Web: step.do("search-hackernews") retries 3, exponential
+    WF-->>Agent: reportProgress -> broadcast to UI
+
+    WF-->>Agent: awaiting approval
+    User->>UI: click Approve
+    UI->>Agent: stub.approveResearch(instanceId)
+    Agent->>WF: approveWorkflow(instanceId)
+
+    loop each source
+        WF->>AI: step.do("summarize-i")
+    end
+    WF->>AI: step.do("synthesize-brief")
+    WF->>Agent: step.do("persist-brief")
+    Agent->>DB: INSERT INTO briefs
+    WF->>Agent: step.reportComplete(brief)
+    Agent-->>UI: brief rendered in chat
+```
+
+Design notes and rejected alternatives are in [`docs/architecture.md`](docs/architecture.md).
+
+## What the workflow actually does
+
+The coordination requirement is not one model call in a wrapper. `ResearchWorkflow` runs several
+`step.do` calls with genuinely different failure modes and retry policies:
+
+| Step | Fails on | Retries |
+|---|---|---|
+| `plan-queries` | Model error or schema violation | 2, exponential from 2s |
+| `search-wikipedia` | Network, 429, 5xx, timeout | 3, exponential from 5s, 30s timeout |
+| `search-hackernews` | Network, 429, 5xx, timeout | 3, exponential from 5s, 30s timeout |
+| `summarize-<i>` | Model error, one call per source | 2, exponential from 2s |
+| `synthesize-brief` | Model error | 2, exponential from 2s |
+| `persist-brief` | Agent RPC / SQLite write | default |
+
+Between the searches and the summaries the workflow calls `waitForApproval`. That wait is
+durable: it survives Durable Object eviction and a browser refresh, which is the thing a single
+Worker request genuinely cannot do.
+
+Inspect a run after deploying:
 
 ```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
+npx wrangler workflows instances describe research-workflow latest
+```
+
+## Memory
+
+Two layers, split by what they cost to broadcast:
+
+- **Broadcast state** (`setState`) holds only small, changing UI facts — status, active workflow
+  id, current step, percent, brief count. Every write is pushed to connected clients.
+- **SQLite** (`this.sql`) holds the `briefs` table and, via `AIChatAgent`, the message history.
+  Brief bodies never enter broadcast state.
+
+A `recallBriefs` tool lets the model search past briefs, so follow-up questions build on earlier
+research instead of starting cold. History is windowed with `pruneMessages` and
+`maxPersistedMessages = 100` to stay inside Llama 3.3's 24k-token context.
+
+## Run locally
+
+```bash
 npm install
-npm run dev
+npm run dev          # http://localhost:5173
 ```
 
-> **Cloudflare authentication is required to run locally.** This template uses
-> Workers AI with `"ai": { "remote": true }` in `wrangler.jsonc`, and Workers AI
-> has no local simulator — so `npm run dev` opens a remote proxy session against
-> Cloudflare and needs you to be authenticated. Either run `wrangler login` once
-> in an interactive terminal, or set a `CLOUDFLARE_API_TOKEN` environment
-> variable (e.g. in a `.env` file). No third-party (OpenAI/Anthropic) key is
-> needed, but a Cloudflare login is.
-
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
-
-Try these prompts to see the different features:
-
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
-- **Drop an image and ask "What's in this image?"** — vision (image understanding)
-
-## Project structure
-
-```
-src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
-```
-
-## What's included
-
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
-
-## Making it your own
-
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
+`npm run dev` requires a Cloudflare login, because the `ai` binding is `remote: true` — Workers AI
+has no local emulation. Wrangler prompts on first run. The account also needs a `workers.dev`
+subdomain, which is created simply by opening the Workers & Pages dashboard page once.
 
 ## Deploy
 
@@ -231,15 +126,40 @@ ANTHROPIC_API_KEY=your-key-here
 npm run deploy
 ```
 
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+## Tests
 
-## Learn more
+```bash
+npx vitest run       # 29 tests
+```
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
+Tests execute inside `workerd`, so bindings and SQLite behave as in production. They cover the
+claims this project rests on:
 
-## License
+| Test file | Proves |
+|---|---|
+| `tests/memory.test.ts` | A brief written through one agent stub is visible from a fresh stub for the same name, state updates alongside the SQL write, and instances stay isolated |
+| `tests/sources.test.ts` | The fetchers throw on 429 and 5xx — which is what makes a workflow step retry instead of failing the run — and the query is encoded rather than interpolated |
+| `tests/select-sources.test.ts` | Irrelevant results are dropped and providers are balanced |
+| `tests/ai-binding.test.ts` | Duplicate text deltas and duplicate tool calls are removed, while models reporting text only via `response` keep working |
+| `tests/bindings.test.ts` | The AI, agent, and workflow bindings resolve and routing behaves |
 
-MIT
+Full gate:
+
+```bash
+npx wrangler types env.d.ts && npx tsc --noEmit && npx vitest run
+```
+
+## A note on the LLM layer
+
+`workers-ai-provider@3.3.1` reads each Workers AI SSE chunk twice — once from the legacy
+top-level fields and again from `choices[0].delta`. Workers AI populates both, so text arrived
+doubled (`"A Cloud A Cloudflare Durableflare Durable..."`) and tool-call arguments concatenated
+into invalid JSON, which made every tool call fail with an unhelpful error. The upstream fix is
+in v4, which requires `ai@7`, but `@cloudflare/ai-chat` pins `ai@6`.
+[`src/ai-binding.ts`](src/ai-binding.ts) drops the redundant top-level copy at the SSE layer, and
+only when an exact duplicate is present, so single-source models still work.
+
+## AI assistance
+
+Built with GitHub Copilot in VS Code using Claude Opus 5. The complete verbatim prompt history,
+including the dead ends, is in [`docs/prompt-history.md`](docs/prompt-history.md).

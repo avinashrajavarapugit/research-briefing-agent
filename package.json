@@ -17,9 +17,9 @@
     "types": "wrangler types env.d.ts",
     "test": "vitest run",
     "gate": "wrangler types env.d.ts && tsc --noEmit && vitest run",
-    "format": "oxfmt --write .",
+    "format": "oxfmt --write src tests",
     "lint": "oxlint src/",
-    "check": "oxfmt --check . && oxlint src/ && tsc"
+    "check": "oxfmt --check src tests && oxlint src/ && tsc"
   },
   "dependencies": {
     "@cloudflare/ai-chat": "^0.9.3",

@@ -101,7 +101,9 @@ export async function searchHackerNews(
 
   const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
   if (!res.ok) {
-    throw new Error(`hacker news search failed: ${res.status} ${res.statusText}`);
+    throw new Error(
+      `hacker news search failed: ${res.status} ${res.statusText}`
+    );
   }
 
   const body = (await res.json()) as HackerNewsResponse;
