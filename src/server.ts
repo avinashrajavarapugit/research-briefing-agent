@@ -396,6 +396,29 @@ Two to four sentences.
           }
         }),
 
+        scheduleFollowUp: tool({
+          description:
+            "Schedule a re-run of research on a question at a later time, " +
+            "so the user gets a refreshed brief.",
+          inputSchema: z.object({
+            question: z.string().describe("The question to revisit"),
+            delayMinutes: z
+              .number()
+              .min(1)
+              .max(1440)
+              .describe("How many minutes from now to re-run the research")
+          }),
+          execute: async ({ question, delayMinutes }) => {
+            const task = await this.schedule(
+              delayMinutes * 60,
+              "runFollowUp",
+              { question },
+              { idempotent: true }
+            );
+            return { scheduledId: task.id, runsInMinutes: delayMinutes };
+          }
+        }),
+
         recallBriefs: tool({
           description:
             "Search briefs already produced for this user. Use before answering " +
@@ -432,18 +455,29 @@ Two to four sentences.
     return result.toUIMessageStreamResponse();
   }
 
-  async executeTask(description: string, _task: Schedule<string>) {
-    // Do the actual work here (send email, call API, etc.)
-    console.log(`Executing scheduled task: ${description}`);
+  /** Scheduled callback: re-runs research on a question the user asked about earlier. */
+  async runFollowUp(payload: { question: string }, _task: Schedule<unknown>) {
+    if (await this.hasLiveResearch()) return;
 
-    // Notify connected clients via a broadcast event.
-    // We use broadcast() instead of saveMessages() to avoid injecting
-    // into chat history — that would cause the AI to see the notification
-    // as new context and potentially loop.
+    const briefId = crypto.randomUUID();
+    const instanceId = await this.runWorkflow(
+      "RESEARCH_WORKFLOW",
+      { briefId, question: payload.question },
+      { metadata: { question: payload.question, followUp: true } }
+    );
+
+    this.setState({
+      ...this.state,
+      status: "researching",
+      activeInstanceId: instanceId,
+      currentStep: "plan",
+      percent: 0.05
+    });
+
     this.broadcast(
       JSON.stringify({
-        type: "scheduled-task",
-        description,
+        type: "follow-up-started",
+        question: payload.question,
         timestamp: new Date().toISOString()
       })
     );

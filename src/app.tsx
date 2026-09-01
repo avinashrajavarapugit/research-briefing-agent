@@ -5,6 +5,7 @@ import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { MCPServersState } from "agents";
 import type { BriefingAgent, BriefingState } from "./server";
 import { ResearchPanel, type WorkflowProgress } from "./ResearchPanel";
+import { VoiceButton } from "./VoiceButton";
 import {
   Badge,
   Button,
@@ -313,6 +314,13 @@ function Chat() {
             toasts.add({
               title: "Research failed",
               description: String(data.error),
+              timeout: 0
+            });
+          }
+          if (data.type === "follow-up-started") {
+            toasts.add({
+              title: "Scheduled follow-up started",
+              description: `Re-researching: ${data.question}`,
               timeout: 0
             });
           }
@@ -947,6 +955,10 @@ function Chat() {
               onClick={() => fileInputRef.current?.click()}
               disabled={!connected || isStreaming}
               className="mb-0.5"
+            />
+            <VoiceButton
+              disabled={!connected || isStreaming}
+              onTranscript={(text) => setInput(text)}
             />
             <InputArea
               ref={textareaRef}
