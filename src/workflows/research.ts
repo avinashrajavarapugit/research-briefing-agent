@@ -55,7 +55,14 @@ export class ResearchWorkflow extends AgentWorkflow<
     const wikipedia = await step.do(
       "search-wikipedia",
       NETWORK_STEP,
-      async () => gather(queries, searchWikipedia)
+      async () => {
+        // Budget lives on the agent: step bodies re-run on retry, so a counter
+        // held here would never drain and the step could never recover.
+        if (await this.agent.consumeFault()) {
+          throw new Error("injected fault: simulated upstream failure");
+        }
+        return gather(queries, searchWikipedia);
+      }
     );
 
     await this.reportProgress({

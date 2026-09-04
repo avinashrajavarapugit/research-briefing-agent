@@ -79,6 +79,13 @@ export class BriefingAgent extends AIChatAgent<Env, BriefingState> {
       created_at INTEGER NOT NULL
     )`;
 
+    // Single-row counter. Lives outside the workflow because step bodies re-run
+    // on retry, so a counter held in the step could never reach zero.
+    this.sql`CREATE TABLE IF NOT EXISTS fault_budget (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      remaining INTEGER NOT NULL
+    )`;
+
     // Configure OAuth popup behavior for MCP servers that require authentication
     this.mcp.configureOAuthCallback({
       customHandler: (result) => {
@@ -135,6 +142,34 @@ export class BriefingAgent extends AIChatAgent<Env, BriefingState> {
     return this.sql<BriefRow>`SELECT * FROM briefs
       WHERE question LIKE ${like} OR brief_md LIKE ${like}
       ORDER BY created_at DESC LIMIT ${limit}`;
+  }
+
+  /**
+   * Arms N deterministic failures in the next run's source-fetch step, so the
+   * Workflow's retry and backoff can be observed end to end rather than assumed.
+   */
+  @callable()
+  armFaultInjection(attempts = 1) {
+    this.sql`INSERT OR REPLACE INTO fault_budget (id, remaining)
+             VALUES (1, ${Math.max(0, attempts)})`;
+    return { armed: Math.max(0, attempts) };
+  }
+
+  @callable()
+  faultBudget(): number {
+    return (
+      this.sql<{ remaining: number }>`
+      SELECT remaining FROM fault_budget WHERE id = 1`[0]?.remaining ?? 0
+    );
+  }
+
+  /** Returns true if this attempt should fail, decrementing the budget. */
+  consumeFault(): boolean {
+    const remaining = this.faultBudget();
+    if (remaining <= 0) return false;
+
+    this.sql`UPDATE fault_budget SET remaining = ${remaining - 1} WHERE id = 1`;
+    return true;
   }
 
   private model() {

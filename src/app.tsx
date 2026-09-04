@@ -40,6 +40,7 @@ import {
   BrainIcon,
   CaretDownIcon,
   BugIcon,
+  LightningIcon,
   PlugsConnectedIcon,
   PlusIcon,
   SignInIcon,
@@ -272,6 +273,7 @@ function Chat() {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
+  const [faultArmed, setFaultArmed] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -545,6 +547,18 @@ function Chat() {
                 onCheckedChange={setShowDebug}
                 size="sm"
                 aria-label="Toggle debug mode"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <LightningIcon size={14} className="text-kumo-inactive" />
+              <Switch
+                checked={faultArmed}
+                onCheckedChange={(next: boolean) => {
+                  setFaultArmed(next);
+                  agent.stub.armFaultInjection(next ? 1 : 0);
+                }}
+                size="sm"
+                aria-label="Fail the next source fetch once to exercise workflow retries"
               />
             </div>
             <ThemeToggle />
