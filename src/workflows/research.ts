@@ -2,6 +2,7 @@ import { AgentWorkflow } from "agents/workflows";
 import type { AgentWorkflowEvent, AgentWorkflowStep } from "agents/workflows";
 import type { WorkflowStepConfig } from "cloudflare:workers";
 import { searchHackerNews, searchWikipedia, type Source } from "../sources";
+import { cachedSearch, type CacheStats } from "../cache";
 // Type-only: keeps the class re-export in server.ts from forming an import cycle.
 import type { BriefingAgent } from "../server";
 
@@ -61,7 +62,12 @@ export class ResearchWorkflow extends AgentWorkflow<
         if (await this.agent.consumeFault()) {
           throw new Error("injected fault: simulated upstream failure");
         }
-        return gather(queries, searchWikipedia);
+        return gather(
+          queries,
+          "wikipedia",
+          searchWikipedia,
+          this.env.SOURCE_CACHE
+        );
       }
     );
 
@@ -75,10 +81,20 @@ export class ResearchWorkflow extends AgentWorkflow<
     const hackernews = await step.do(
       "search-hackernews",
       NETWORK_STEP,
-      async () => gather(queries, searchHackerNews)
+      async () =>
+        gather(queries, "hackernews", searchHackerNews, this.env.SOURCE_CACHE)
     );
 
-    const sources = selectSources(question, wikipedia, hackernews);
+    const cache = {
+      hits: wikipedia.cache.hits + hackernews.cache.hits,
+      misses: wikipedia.cache.misses + hackernews.cache.misses
+    };
+
+    const sources = selectSources(
+      question,
+      wikipedia.sources,
+      hackernews.sources
+    );
 
     if (sources.length === 0) {
       const message = `No relevant sources found for: ${question}`;
@@ -97,7 +113,7 @@ export class ResearchWorkflow extends AgentWorkflow<
       step: "approval",
       status: "pending",
       percent: 0.5,
-      message: `Approve ${sources.length} sources before synthesis`,
+      message: `Approve ${sources.length} sources before synthesis (${cache.hits} cached, ${cache.misses} fetched)`,
       sources
     });
 
@@ -143,7 +159,7 @@ export class ResearchWorkflow extends AgentWorkflow<
       currentStep: null,
       percent: 1
     });
-    await step.reportComplete({ briefId, question, briefMd, sources });
+    await step.reportComplete({ briefId, question, briefMd, sources, cache });
 
     return { briefId };
   }
@@ -152,9 +168,15 @@ export class ResearchWorkflow extends AgentWorkflow<
 /** Runs one search per query and tolerates individual query failures. */
 async function gather(
   queries: string[],
-  search: (q: string) => Promise<Source[]>
-): Promise<Source[]> {
-  const results = await Promise.allSettled(queries.map((q) => search(q)));
+  provider: string,
+  search: (q: string) => Promise<Source[]>,
+  kv?: KVNamespace
+): Promise<{ sources: Source[]; cache: CacheStats }> {
+  const cache: CacheStats = { hits: 0, misses: 0 };
+
+  const results = await Promise.allSettled(
+    queries.map((q) => cachedSearch(kv, provider, q, search, cache))
+  );
 
   // Every query failing means the provider is down — surface it so the step retries.
   if (results.length > 0 && results.every((r) => r.status === "rejected")) {
@@ -164,7 +186,10 @@ async function gather(
       : new Error(String(first.reason));
   }
 
-  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  return {
+    sources: results.flatMap((r) => (r.status === "fulfilled" ? r.value : [])),
+    cache
+  };
 }
 
 function dedupe(sources: Source[]): Source[] {

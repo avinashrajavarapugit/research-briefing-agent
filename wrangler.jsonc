@@ -25,6 +25,12 @@
       "tag": "v1"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "SOURCE_CACHE",
+      "id": "e1a0c46f1c644bc1b1928891389fda03"
+    }
+  ],
   "workflows": [
     {
       "name": "research-workflow",
